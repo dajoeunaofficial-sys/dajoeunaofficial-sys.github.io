@@ -69,8 +69,17 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       return;
     }
     survey = doc.data();
+    const fmtDT = iso => new Date(iso).toLocaleString("ko-KR", { month:"long", day:"numeric", hour:"numeric", minute:"2-digit" });
     if (!survey.open) {
       showMsg("🔒", "마감된 설문이에요", "이 설문은 더 이상 응답을 받지 않아요.");
+      return;
+    }
+    if (survey.startAt && Date.now() < new Date(survey.startAt).getTime()) {
+      showMsg("⏰", "아직 시작 전이에요", `이 설문은 ${fmtDT(survey.startAt)}부터 참여할 수 있어요.\n조금만 기다려 주세요!`);
+      return;
+    }
+    if (survey.endAt && Date.now() > new Date(survey.endAt).getTime()) {
+      showMsg("🔒", "참여 기간이 끝났어요", `이 설문은 ${fmtDT(survey.endAt)}까지만 참여할 수 있었어요.`);
       return;
     }
     if (localStorage.getItem("survey_done_" + surveyId)) {
@@ -106,6 +115,13 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
             <input type="${inputType}" name="q${qi}" value="${esc(opt)}" ${defs.includes(opt) ? "checked" : ""}>
             <span>${esc(opt)}</span>
           </label>`).join("");
+      } else if (q.type === "option") {
+        html += (q.groups || []).map((g, gi) => `
+          <label class="opt-group-name">${esc(g.name)}</label>
+          <select class="opt-sel" data-g="${esc(g.name)}">
+            <option value="">선택하세요</option>
+            ${g.items.map(it => `<option value="${esc(it)}">${esc(it)}</option>`).join("")}
+          </select>`).join("");
       } else if (q.type === "rating") {
         html += `<div class="stars" data-val="0">` +
           [1,2,3,4,5].map(n => `<span data-n="${n}">★</span>`).join("") + `</div>`;
@@ -172,6 +188,15 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       } else if (q.type === "multi") {
         const sels = [...card.querySelectorAll("input:checked")].map(i => i.value);
         val = sels.length ? sels : null;
+      } else if (q.type === "option") {
+        const picked = [...card.querySelectorAll(".opt-sel")]
+          .map(sel => sel.value ? sel.dataset.g + ": " + sel.value : null);
+        if (q.required !== false) {
+          val = picked.every(Boolean) ? picked : null;
+        } else {
+          const f = picked.filter(Boolean);
+          val = f.length ? f : null;
+        }
       } else if (q.type === "rating") {
         const n = Number(card.querySelector(".stars").dataset.val);
         val = n > 0 ? n : null;
@@ -210,6 +235,21 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
         answers,
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
+      // 구글 시트 연동: 설정돼 있으면 시트에도 한 줄 추가 (실패해도 응답 저장에는 영향 없음)
+      if (survey.sheetUrl) {
+        try {
+          fetch(survey.sheetUrl, {
+            method: "POST",
+            mode: "no-cors",
+            body: JSON.stringify({
+              surveyTitle: survey.title,
+              questions: survey.questions.map(q => q.title),
+              time: new Date().toLocaleString("ko-KR"),
+              answers: answers.map(a => Array.isArray(a) ? a.join(", ") : (a ?? ""))
+            })
+          }).catch(() => {});
+        } catch(_) {}
+      }
       localStorage.setItem("survey_done_" + surveyId, "1");
       showMsg("🎉", "제출 완료!", "소중한 의견 감사합니다.");
     } catch(e) {

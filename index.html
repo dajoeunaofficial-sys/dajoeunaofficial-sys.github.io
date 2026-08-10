@@ -63,6 +63,7 @@
 
   <!-- 결과 보기 -->
   <div id="viewResult" class="hidden">
+    <button class="btn ghost" id="btnBackFromRes" style="margin-bottom:14px;">← 목록으로 돌아가기</button>
     <div class="card accent">
       <h2 id="resTitle"></h2>
       <p class="muted" id="resDesc"></p>
@@ -70,12 +71,14 @@
       <div class="mt8" style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn small ghost" id="btnCopyLink2">🔗 설문 링크 복사</button>
         <button class="btn small ghost" id="btnCsv">⬇️ CSV 다운로드</button>
-        <button class="btn small plain" id="btnBackFromRes">← 목록으로</button>
+        <button class="btn small ghost" id="btnSheet">📊 구글 시트 연동</button>
       </div>
+      <p class="muted mt8 hidden" id="sheetStatus"></p>
     </div>
     <div class="card" id="resBody"></div>
   </div>
 </div>
+<div id="modalBg" class="modal-bg hidden"><div class="modal" id="modalBox"></div></div>
 <div id="toast"></div>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -93,6 +96,28 @@ function toast(msg){
 }
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+// ---------- 모달 ----------
+function openModal(html){
+  $("modalBox").innerHTML = html;
+  $("modalBg").classList.remove("hidden");
+  return $("modalBox");
+}
+function closeModal(){ $("modalBg").classList.add("hidden"); }
+document.addEventListener("click", e => { if (e.target.id === "modalBg") closeModal(); });
+function confirmDialog(title, text, okLabel){
+  return new Promise(resolve => {
+    const box = openModal(`
+      <h3>${esc(title)}</h3>
+      <p class="muted" style="white-space:pre-wrap">${esc(text)}</p>
+      <div class="m-btns">
+        <button class="btn plain" id="mCancel">취소</button>
+        <button class="btn danger" id="mOk">${esc(okLabel || "확인")}</button>
+      </div>`);
+    box.querySelector("#mCancel").onclick = () => { closeModal(); resolve(false); };
+    box.querySelector("#mOk").onclick = () => { closeModal(); resolve(true); };
+  });
+}
+
 // ---------- 설정 확인 ----------
 const cfg = window.firebaseConfig || {};
 if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
@@ -105,7 +130,7 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
   let editingId = null;   // 수정 중인 설문 id (새 설문이면 null)
   let currentResult = null; // {survey, responses} CSV용
 
-  const QTYPES = { single:"객관식 (하나 선택)", multi:"체크박스 (여러 개 선택)", text:"주관식 (텍스트)", rating:"별점 (1~5점)", notice:"설명 + 선택 (동의/비동의)" };
+  const QTYPES = { single:"객관식 (하나 선택)", multi:"체크박스 (여러 개 선택)", option:"옵션 선택 (쇼핑몰 옵션처럼)", text:"주관식 (텍스트)", rating:"별점 (1~5점)", notice:"설명 + 선택 (동의/비동의)" };
 
   auth.onAuthStateChanged(user => {
     me = user;
@@ -143,15 +168,19 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
         const el = document.createElement("div");
         el.className = "survey-item";
         const date = s.createdAt ? new Date(s.createdAt.seconds*1000).toLocaleDateString("ko-KR") : "";
+        const st = statusOf(s);
+        const sched = (s.startAt || s.endAt)
+          ? ` · ⏰ ${s.startAt ? fmtDT(s.startAt) : ""} ~ ${s.endAt ? fmtDT(s.endAt) : ""}` : "";
         el.innerHTML = `
           <div class="info">
-            <div class="title">${esc(s.title)} <span class="badge ${s.open?"open":"closed"}">${s.open?"진행 중":"마감"}</span></div>
-            <div class="meta">${date} · 질문 ${s.questions.length}개</div>
+            <div class="title">${esc(s.title)} <span class="badge ${st.k}">${st.t}</span></div>
+            <div class="meta">${date} · 질문 ${s.questions.length}개${sched}</div>
           </div>
           <div class="actions">
             <button class="btn small" data-act="result">결과</button>
             <button class="btn small ghost" data-act="link">링크 복사</button>
             <button class="btn small ghost" data-act="edit">수정</button>
+            <button class="btn small ghost" data-act="sched">예약</button>
             <button class="btn small ghost" data-act="toggle">${s.open?"마감하기":"다시 열기"}</button>
             <button class="btn small danger" data-act="del">삭제</button>
           </div>`;
@@ -161,13 +190,18 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
           if (act === "result") openResult(s.id);
           if (act === "link") copyLink(s.id);
           if (act === "edit") openEditor(s);
+          if (act === "sched") openScheduleModal(s);
           if (act === "toggle") {
             await db.collection("surveys").doc(s.id).update({ open: !s.open });
             toast(s.open ? "설문을 마감했어요" : "설문을 다시 열었어요");
             loadList();
           }
           if (act === "del") {
-            if (!confirm(`"${s.title}" 설문을 삭제할까요?\n응답 데이터도 함께 사라져요.`)) return;
+            const ok = await confirmDialog(
+              "설문을 삭제할까요?",
+              `"${s.title}" 설문이 완전히 삭제돼요.\n응답 데이터도 함께 사라지고, 되돌릴 수 없어요.`,
+              "삭제하기");
+            if (!ok) return;
             await db.collection("surveys").doc(s.id).delete();
             toast("삭제했어요");
             loadList();
@@ -187,6 +221,130 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
     navigator.clipboard.writeText(formUrl(id))
       .then(() => toast("설문 링크를 복사했어요! 카톡 등으로 공유하세요 📎"))
       .catch(() => prompt("아래 링크를 복사하세요:", formUrl(id)));
+  }
+
+  // ---------- 상태/날짜 도우미 ----------
+  function statusOf(s){
+    const now = Date.now();
+    if (!s.open) return { k:"closed", t:"마감" };
+    if (s.startAt && now < new Date(s.startAt).getTime()) return { k:"sched", t:"예약됨" };
+    if (s.endAt && now > new Date(s.endAt).getTime()) return { k:"closed", t:"기간 종료" };
+    return { k:"open", t:"진행 중" };
+  }
+  function fmtDT(iso){
+    return new Date(iso).toLocaleString("ko-KR", { month:"numeric", day:"numeric", hour:"numeric", minute:"2-digit" });
+  }
+  function toLocalInput(iso){
+    const d = new Date(iso);
+    const p = n => String(n).padStart(2,"0");
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  // ---------- 참여 기간 예약 ----------
+  function openScheduleModal(s){
+    const box = openModal(`
+      <h3>⏰ 참여 기간 예약</h3>
+      <p class="muted" style="margin-bottom:14px;">설정한 시간이 되면 자동으로 열리고, 지나면 자동으로 닫혀요.<br>한쪽만 설정해도 돼요.</p>
+      <label class="name" style="display:block;font-size:13px;font-weight:700;color:var(--text-sub);margin-bottom:6px;">시작 — 이때부터 참여 가능</label>
+      <input type="datetime-local" id="mStart" value="${s.startAt ? toLocalInput(s.startAt) : ""}">
+      <label class="name" style="display:block;font-size:13px;font-weight:700;color:var(--text-sub);margin:10px 0 6px;">종료 — 이때까지만 참여 가능</label>
+      <input type="datetime-local" id="mEnd" value="${s.endAt ? toLocalInput(s.endAt) : ""}">
+      <div class="m-btns">
+        ${(s.startAt || s.endAt) ? '<button class="btn danger" id="mClear">예약 해제</button>' : ""}
+        <button class="btn plain" id="mCancel">취소</button>
+        <button class="btn" id="mSave">저장</button>
+      </div>`);
+    box.querySelector("#mCancel").onclick = closeModal;
+    const clearBtn = box.querySelector("#mClear");
+    if (clearBtn) clearBtn.onclick = async () => {
+      await db.collection("surveys").doc(s.id).update({ startAt: null, endAt: null });
+      closeModal(); toast("예약을 해제했어요"); loadList();
+    };
+    box.querySelector("#mSave").onclick = async () => {
+      const sv = box.querySelector("#mStart").value;
+      const ev = box.querySelector("#mEnd").value;
+      if (!sv && !ev) { toast("시작 또는 종료 시간을 입력해 주세요"); return; }
+      if (sv && ev && new Date(ev) <= new Date(sv)) { toast("종료 시간이 시작 시간보다 빨라요"); return; }
+      await db.collection("surveys").doc(s.id).update({
+        startAt: sv ? new Date(sv).toISOString() : null,
+        endAt: ev ? new Date(ev).toISOString() : null,
+        open: true
+      });
+      closeModal(); toast("참여 기간을 예약했어요 ⏰"); loadList();
+    };
+  }
+
+  // ---------- 구글 시트 연동 ----------
+  const APPS_SCRIPT_CODE = `function doPost(e) {
+  var data = JSON.parse(e.postData.contents);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var name = (data.surveyTitle || "설문").slice(0, 90);
+  var sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  if (sh.getLastRow() === 0) sh.appendRow(["응답 시각"].concat(data.questions));
+  sh.appendRow([data.time].concat(data.answers));
+  return ContentService.createTextOutput("ok");
+}`;
+
+  function updateSheetStatus(s){
+    const el = $("sheetStatus");
+    el.classList.toggle("hidden", !s.sheetUrl);
+    if (s.sheetUrl) el.textContent = "📊 구글 시트 연동 중 — 새 응답이 제출될 때마다 시트에 실시간으로 쌓여요.";
+    $("btnSheet").textContent = s.sheetUrl ? "📊 구글 시트" : "📊 구글 시트 연동";
+  }
+
+  function openSheetModal(id, s){
+    if (s.sheetUrl) {
+      const box = openModal(`
+        <h3>📊 구글 시트 연동됨</h3>
+        <p class="muted">새 응답이 제출될 때마다 시트에 한 줄씩 자동으로 쌓여요.<br>(연동 이전의 응답은 CSV 다운로드로 받을 수 있어요)</p>
+        <div class="m-btns">
+          ${s.sheetViewUrl ? `<a class="btn ghost" href="${esc(s.sheetViewUrl)}" target="_blank" style="text-decoration:none;">시트 열기 ↗</a>` : ""}
+          <button class="btn danger" id="mUnlink">연동 해제</button>
+          <button class="btn plain" id="mCancel">닫기</button>
+        </div>`);
+      box.querySelector("#mCancel").onclick = closeModal;
+      box.querySelector("#mUnlink").onclick = async () => {
+        await db.collection("surveys").doc(id).update({ sheetUrl: null, sheetViewUrl: null });
+        s.sheetUrl = null; s.sheetViewUrl = null;
+        updateSheetStatus(s); closeModal(); toast("구글 시트 연동을 해제했어요");
+      };
+      return;
+    }
+    const box = openModal(`
+      <h3>📊 구글 시트 연동하기</h3>
+      <p class="muted" style="margin-bottom:10px;">한 번만 설정하면, 응답이 제출될 때마다 시트에 실시간으로 쌓여요. (약 5분)</p>
+      <ol>
+        <li><a href="https://sheets.google.com" target="_blank">sheets.google.com</a>에서 <b>새 스프레드시트</b> 만들기 (dajoeuna.official 계정)</li>
+        <li>시트 상단 메뉴 <b>확장 프로그램 → Apps Script</b> 클릭</li>
+        <li>열린 편집기의 코드를 전부 지우고, 아래 코드를 붙여넣기 → 💾 저장</li>
+        <li>오른쪽 위 <b>배포 → 새 배포</b> → ⚙️에서 유형 <b>웹 앱</b> 선택<br>· 액세스 권한: <b>모든 사용자</b> → <b>배포</b> → 권한 승인</li>
+        <li>나오는 <b>웹 앱 URL</b>(…/exec로 끝남)을 아래 첫 칸에 붙여넣기</li>
+      </ol>
+      <textarea class="code-box" readonly>${APPS_SCRIPT_CODE}</textarea>
+      <button class="btn small ghost" id="mCopyCode" style="margin:8px 0 14px;">코드 복사</button>
+      <label class="name" style="display:block;font-size:13px;font-weight:700;color:var(--text-sub);margin-bottom:6px;">웹 앱 URL (…/exec) — 필수</label>
+      <input type="text" id="mExecUrl" placeholder="https://script.google.com/macros/s/…/exec">
+      <label class="name" style="display:block;font-size:13px;font-weight:700;color:var(--text-sub);margin:10px 0 6px;">스프레드시트 주소 — 선택 (넣으면 '시트 열기' 버튼이 생겨요)</label>
+      <input type="text" id="mViewUrl" placeholder="https://docs.google.com/spreadsheets/d/…">
+      <div class="m-btns">
+        <button class="btn plain" id="mCancel">취소</button>
+        <button class="btn" id="mSaveSheet">연동 저장</button>
+      </div>`);
+    box.querySelector("#mCancel").onclick = closeModal;
+    box.querySelector("#mCopyCode").onclick = () => {
+      navigator.clipboard.writeText(APPS_SCRIPT_CODE).then(() => toast("코드를 복사했어요"));
+    };
+    box.querySelector("#mSaveSheet").onclick = async () => {
+      const url = box.querySelector("#mExecUrl").value.trim();
+      const view = box.querySelector("#mViewUrl").value.trim();
+      if (!url.startsWith("https://script.google.com/")) {
+        toast("웹 앱 URL을 확인해 주세요 (https://script.google.com/… 형태)"); return;
+      }
+      await db.collection("surveys").doc(id).update({ sheetUrl: url, sheetViewUrl: view || null });
+      s.sheetUrl = url; s.sheetViewUrl = view || null;
+      updateSheetStatus(s); closeModal(); toast("구글 시트를 연동했어요 📊 이제 새 응답이 실시간으로 쌓여요");
+    };
   }
 
   // ---------- 편집 ----------
@@ -222,7 +380,11 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       <div class="q-opts"></div>
       <div class="q-foot">
         <label><input type="checkbox" class="q-req" ${q.required!==false?"checked":""}> 필수 답변</label>
-        <button class="btn small danger q-del">질문 삭제</button>
+        <div class="q-foot-btns">
+          <button class="btn small plain q-up" title="위로 이동">▲ 위로</button>
+          <button class="btn small plain q-down" title="아래로 이동">▼ 아래로</button>
+          <button class="btn small danger q-del">질문 삭제</button>
+        </div>
       </div>`;
     const optsBox = card.querySelector(".q-opts");
     const typeSel = card.querySelector(".q-type");
@@ -234,6 +396,9 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
     card._sub = q.subtype || "long";
     card._maxLen = q.maxLen || 500;
     card._content = q.content || "";
+    card._groups = (q.groups && q.groups.length)
+      ? JSON.parse(JSON.stringify(q.groups))
+      : [{ name:"", items:["",""] }];
 
     function renderOpts(){
       const t = typeSel.value;
@@ -277,21 +442,77 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       } else if (t === "notice") {
         optsBox.innerHTML = `
           <textarea class="q-content" rows="5" placeholder="유의사항 등 긴 설명을 적어 주세요. 응답자에게 박스 안에 표시돼요."></textarea>
-          <p class="muted" style="margin:8px 0 4px;">아래 선택지 2개 중 하나를 응답자가 고르게 돼요:</p>`;
+          <p class="muted" style="margin:8px 0 4px;">아래 선택지 2개 중 하나를 응답자가 고르게 돼요. ◉를 누르면 기본 선택으로 지정돼요 (다시 누르면 해제):</p>`;
         const ta = optsBox.querySelector(".q-content");
         ta.value = card._content;
         ta.addEventListener("input", () => { card._content = ta.value; });
-        const labels = [card._opts[0]?.v || "동의", card._opts[1]?.v || "비동의"];
-        labels.forEach((v, i) => {
+        const prev = card._opts;
+        card._opts = [0,1].map(i => ({
+          v: (prev[i] && prev[i].v) || (i === 0 ? "동의" : "비동의"),
+          def: !!(prev[i] && prev[i].def)
+        }));
+        card._opts.forEach((o, i) => {
           const row = document.createElement("div");
           row.className = "opt-row";
-          row.innerHTML = `<span class="fake-radio"></span><input type="text" class="n-opt" placeholder="${i===0?"예) 동의":"예) 비동의"}" value="${esc(v)}">`;
-          row.querySelector(".n-opt").addEventListener("input", ev => {
-            card._opts[i] = { v: ev.target.value, def: false };
+          row.innerHTML = `<input type="radio" class="opt-def n-def" name="${rname}" title="기본 선택으로 지정" ${o.def?"checked":""}>
+            <input type="text" class="n-opt" placeholder="${i===0?"예) 동의":"예) 비동의"}" value="${esc(o.v)}">`;
+          const defIn = row.querySelector(".n-def");
+          defIn.addEventListener("mousedown", () => { defIn._was = defIn.checked; });
+          defIn.addEventListener("click", () => {
+            if (defIn._was) defIn.checked = false;
+            card._opts.forEach(oo => { oo.def = false; });
+            if (defIn.checked) card._opts[i].def = true;
           });
+          row.querySelector(".n-opt").addEventListener("input", ev => { card._opts[i].v = ev.target.value; });
           optsBox.appendChild(row);
         });
-        card._opts = labels.map(v => ({ v, def: false }));
+      } else if (t === "option") {
+        const info = document.createElement("p");
+        info.className = "muted";
+        info.style.marginBottom = "10px";
+        info.textContent = "응답자는 쇼핑몰에서 옵션 고르듯, 각 옵션에서 하나씩 골라요.";
+        optsBox.appendChild(info);
+        const wrap = document.createElement("div");
+        optsBox.appendChild(wrap);
+        function renderGroups(){
+          wrap.innerHTML = "";
+          card._groups.forEach((g, gi) => {
+            const gb = document.createElement("div");
+            gb.className = "grp-box";
+            gb.innerHTML = `
+              <div class="grp-head">
+                <span class="grp-no">옵션 ${gi+1}</span>
+                <input type="text" class="g-name g-in" placeholder="옵션 이름 (예: 반팔티)" value="${esc(g.name)}">
+                <button class="btn small danger g-del">✕</button>
+              </div>
+              <div class="g-items"></div>
+              <button class="btn small ghost g-add">＋ 항목 추가</button>`;
+            const itemsBox = gb.querySelector(".g-items");
+            g.items.forEach((it, ii) => {
+              const row = document.createElement("div");
+              row.className = "opt-row";
+              row.innerHTML = `<span class="muted grp-idx">${gi+1}-${ii+1})</span>
+                <input type="text" class="g-in" placeholder="항목 (예: 블랙 반팔티)" value="${esc(it)}">
+                <button class="btn small plain">✕</button>`;
+              row.querySelector("input").addEventListener("input", ev => { g.items[ii] = ev.target.value; });
+              row.querySelector("button.plain").onclick = () => { g.items.splice(ii,1); renderGroups(); };
+              itemsBox.appendChild(row);
+            });
+            gb.querySelector(".g-name").addEventListener("input", ev => { g.name = ev.target.value; });
+            gb.querySelector(".g-add").onclick = () => { g.items.push(""); renderGroups(); };
+            gb.querySelector(".g-del").onclick = () => {
+              if (card._groups.length <= 1) { toast("옵션은 최소 1개 필요해요"); return; }
+              card._groups.splice(gi,1); renderGroups();
+            };
+            wrap.appendChild(gb);
+          });
+          const addG = document.createElement("button");
+          addG.className = "btn small ghost";
+          addG.textContent = "＋ 옵션 추가 (예: 하의)";
+          addG.onclick = () => { card._groups.push({ name:"", items:["",""] }); renderGroups(); };
+          wrap.appendChild(addG);
+        }
+        renderGroups();
       } else {
         // 객관식 / 체크박스
         card._opts.forEach(o => addOptRow(o));
@@ -334,11 +555,19 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
     }
     typeSel.onchange = renderOpts;
     optsBox.addEventListener("input", ev => {
-      if (ev.target.matches('.opt-row input[type=text]:not(.n-opt)')) saveOpts();
+      if (ev.target.matches('.opt-row input[type=text]:not(.n-opt):not(.g-in)')) saveOpts();
     });
     card.querySelector(".q-del").onclick = () => {
       if ($("qList").children.length <= 1) { toast("질문은 최소 1개 필요해요"); return; }
       card.remove();
+    };
+    card.querySelector(".q-up").onclick = () => {
+      const prev = card.previousElementSibling;
+      if (prev) { $("qList").insertBefore(card, prev); card.scrollIntoView({ behavior:"smooth", block:"nearest" }); }
+    };
+    card.querySelector(".q-down").onclick = () => {
+      const next = card.nextElementSibling;
+      if (next) { $("qList").insertBefore(next, card); card.scrollIntoView({ behavior:"smooth", block:"nearest" }); }
     };
     renderOpts();
     $("qList").appendChild(card);
@@ -377,6 +606,18 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
         q.content = content;
         const labels = [...card.querySelectorAll(".n-opt")].map(i => i.value.trim());
         q.options = [labels[0] || "동의", labels[1] || "비동의"];
+        const defIdx = [...card.querySelectorAll(".n-def")].findIndex(r => r.checked);
+        q.default = defIdx >= 0 ? q.options[defIdx] : null;
+      } else if (type === "option") {
+        const groups = card._groups
+          .map(g => ({ name: g.name.trim(), items: g.items.map(i => i.trim()).filter(Boolean) }))
+          .filter(g => g.name || g.items.length);
+        if (!groups.length) { toast(`"${qt}" 질문에 옵션을 1개 이상 만들어 주세요`); return; }
+        for (const g of groups) {
+          if (!g.name) { toast(`"${qt}" 질문에 이름 없는 옵션이 있어요. 옵션 이름을 입력해 주세요`); return; }
+          if (!g.items.length) { toast(`"${qt}" 질문의 "${g.name}" 옵션에 항목을 1개 이상 넣어 주세요`); return; }
+        }
+        q.groups = groups;
       }
       questions.push(q);
     }
@@ -419,6 +660,8 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       $("resDesc").textContent = s.desc || "";
       $("resCount").textContent = responses.length;
       $("btnCopyLink2").onclick = () => copyLink(id);
+      $("btnSheet").onclick = () => openSheetModal(id, currentResult.survey);
+      updateSheetStatus(s);
 
       const body = $("resBody");
       body.innerHTML = "";
@@ -447,6 +690,29 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
               <div class="bar-bg"><div class="bar" style="width:${c/max*100}%"></div></div>
               <div class="cnt">${c}명 (${Math.round(c/total*100)}%)</div>
             </div>`).join("");
+        } else if (q.type === "option") {
+          const total = responses.length;
+          (q.groups || []).forEach(g => {
+            const prefix = g.name + ": ";
+            const counts = {};
+            g.items.forEach(it => counts[it] = 0);
+            answers.forEach(a => {
+              (Array.isArray(a) ? a : []).forEach(v => {
+                if (typeof v === "string" && v.startsWith(prefix)) {
+                  const item = v.slice(prefix.length);
+                  if (item in counts) counts[item]++;
+                }
+              });
+            });
+            const max = Math.max(1, ...Object.values(counts));
+            html += `<div style="font-weight:600; margin:10px 0 6px;">${esc(g.name)}</div>`;
+            html += Object.entries(counts).map(([opt,c]) => `
+              <div class="bar-row">
+                <div class="lab" title="${esc(opt)}">${esc(opt)}</div>
+                <div class="bar-bg"><div class="bar" style="width:${c/max*100}%"></div></div>
+                <div class="cnt">${c}명 (${Math.round(c/total*100)}%)</div>
+              </div>`).join("");
+          });
         } else if (q.type === "rating") {
           const nums = answers.filter(a => typeof a === "number");
           const avg = nums.length ? (nums.reduce((x,y)=>x+y,0)/nums.length) : 0;
