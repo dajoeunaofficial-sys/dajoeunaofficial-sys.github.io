@@ -61,12 +61,12 @@ body {
 .btn.small { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
 .btn.big { width: 100%; padding: 14px; font-size: 16px; }
 
-input[type=text], textarea, select {
+input[type=text], input[type=tel], input[type=number], textarea, select {
   width: 100%; border: 1.5px solid var(--border); border-radius: 10px;
   padding: 10px 12px; font-size: 15px; font-family: inherit;
   background: #fff; color: var(--text);
 }
-input[type=text]:focus, textarea:focus, select:focus {
+input[type=text]:focus, input[type=tel]:focus, input[type=number]:focus, textarea:focus, select:focus {
   outline: none; border-color: var(--primary);
 }
 textarea { resize: vertical; min-height: 80px; }
@@ -108,12 +108,31 @@ textarea { resize: vertical; min-height: 80px; }
 .q-card .q-head select { width: auto; }
 .opt-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .opt-row input[type=text] { flex: 1; }
+.opt-row .opt-def { width: 18px; height: 18px; accent-color: var(--primary); flex-shrink: 0; cursor: pointer; }
+.opt-row .fake-radio {
+  width: 16px; height: 16px; border: 2px solid var(--text-sub);
+  border-radius: 50%; flex-shrink: 0;
+}
+.opt-hint { font-size: 12px; color: var(--text-sub); margin: 4px 0 8px; }
+.sub-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.sub-row select { width: auto; }
+.sub-row .maxlen-box { font-size: 14px; color: var(--text-sub); }
+.sub-row .q-maxlen { width: 90px; padding: 6px 8px; }
+.sub-hint { font-size: 13px; }
 .q-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; flex-wrap: wrap; gap: 8px; }
 .q-foot label { font-size: 14px; color: var(--text-sub); display: flex; align-items: center; gap: 6px; cursor: pointer; }
 
 /* 응답 폼 */
 .q-view { margin-bottom: 8px; }
 .q-view .q-title { font-weight: 700; font-size: 16px; margin-bottom: 12px; }
+.q-desc { color: var(--text-sub); font-size: 14px; margin: -8px 0 12px; white-space: pre-wrap; }
+.q-card .q-desc-in { margin-bottom: 12px; font-size: 14px; }
+.notice-content {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; font-size: 14px; white-space: pre-wrap; word-break: break-word;
+  margin-bottom: 12px; max-height: 320px; overflow-y: auto;
+}
+.q-view .t-in { margin-bottom: 8px; }
 .q-view .req { color: var(--danger); margin-left: 3px; }
 .choice {
   display: flex; align-items: center; gap: 10px;

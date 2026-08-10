@@ -95,21 +95,48 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       card.className = "card q-view";
       card.dataset.qi = qi;
       let html = `<div class="q-title">${qi+1}. ${esc(q.title)}${q.required!==false ? '<span class="req">*</span>' : ""}</div>`;
+      if (q.desc) html += `<div class="q-desc">${esc(q.desc)}</div>`;
 
-      if (q.type === "single" || q.type === "multi") {
-        const inputType = q.type === "single" ? "radio" : "checkbox";
-        html += q.options.map((opt,oi) => `
-          <label class="choice">
-            <input type="${inputType}" name="q${qi}" value="${esc(opt)}">
+      if (q.type === "single" || q.type === "multi" || q.type === "notice") {
+        if (q.type === "notice" && q.content) html += `<div class="notice-content">${esc(q.content)}</div>`;
+        const inputType = q.type === "multi" ? "checkbox" : "radio";
+        const defs = q.type === "multi" ? (q.defaults || []) : (q.default ? [q.default] : []);
+        html += q.options.map(opt => `
+          <label class="choice ${defs.includes(opt) ? "on" : ""}">
+            <input type="${inputType}" name="q${qi}" value="${esc(opt)}" ${defs.includes(opt) ? "checked" : ""}>
             <span>${esc(opt)}</span>
           </label>`).join("");
       } else if (q.type === "rating") {
         html += `<div class="stars" data-val="0">` +
           [1,2,3,4,5].map(n => `<span data-n="${n}">★</span>`).join("") + `</div>`;
       } else {
-        html += `<textarea placeholder="답변을 입력해 주세요"></textarea>`;
+        const sub = q.subtype || "long";
+        if (sub === "short") {
+          html += `<input type="text" class="t-in" maxlength="40" placeholder="답변을 입력해 주세요 (40자 이내)">`;
+        } else if (sub === "name") {
+          html += `<input type="text" class="t-in" maxlength="10" placeholder="이름을 입력해 주세요 (10자 이내)">`;
+        } else if (sub === "phone") {
+          html += `<input type="tel" class="t-in t-phone" maxlength="13" inputmode="numeric" placeholder="000-0000-0000">`;
+        } else if (sub === "address") {
+          html += `<input type="text" class="t-in t-addr1" placeholder="도로명 주소 또는 지번 주소">
+                   <input type="text" class="t-in t-addr2" placeholder="나머지 주소 (상세 주소)">`;
+        } else {
+          html += `<textarea placeholder="답변을 입력해 주세요"${q.maxLen ? ` maxlength="${q.maxLen}"` : ""}></textarea>`;
+        }
       }
       card.innerHTML = html;
+
+      // 전화번호 자동 하이픈 (000-0000-0000)
+      const ph = card.querySelector(".t-phone");
+      if (ph) {
+        ph.addEventListener("input", () => {
+          const d = ph.value.replace(/\D/g, "").slice(0, 11);
+          let out = d;
+          if (d.length > 7) out = d.slice(0,3) + "-" + d.slice(3, d.length-4) + "-" + d.slice(-4);
+          else if (d.length > 3) out = d.slice(0,3) + "-" + d.slice(3);
+          ph.value = out;
+        });
+      }
 
       // 선택 시 테두리 강조
       card.querySelectorAll(".choice input").forEach(inp => {
@@ -139,7 +166,7 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
       const qi = Number(card.dataset.qi);
       const q = survey.questions[qi];
       let val = null;
-      if (q.type === "single") {
+      if (q.type === "single" || q.type === "notice") {
         const sel = card.querySelector("input:checked");
         val = sel ? sel.value : null;
       } else if (q.type === "multi") {
@@ -149,8 +176,23 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
         const n = Number(card.querySelector(".stars").dataset.val);
         val = n > 0 ? n : null;
       } else {
-        const t = card.querySelector("textarea").value.trim();
-        val = t || null;
+        const sub = q.subtype || "long";
+        if (sub === "address") {
+          const a1 = card.querySelector(".t-addr1").value.trim();
+          const a2 = card.querySelector(".t-addr2").value.trim();
+          val = a1 ? (a1 + (a2 ? " " + a2 : "")) : null;
+        } else if (sub === "phone") {
+          const v = card.querySelector(".t-phone").value.trim();
+          if (v && !/^\d{2,3}-\d{3,4}-\d{4}$/.test(v)) {
+            toast(`${qi+1}번 전화번호를 000-0000-0000 형식으로 입력해 주세요`);
+            card.scrollIntoView({ behavior:"smooth", block:"center" });
+            return;
+          }
+          val = v || null;
+        } else {
+          const el = card.querySelector("textarea") || card.querySelector(".t-in");
+          val = el.value.trim() || null;
+        }
       }
       if (q.required !== false && (val === null)) {
         toast(`${qi+1}번 질문에 답해 주세요`);

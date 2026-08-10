@@ -105,7 +105,7 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
   let editingId = null;   // 수정 중인 설문 id (새 설문이면 null)
   let currentResult = null; // {survey, responses} CSV용
 
-  const QTYPES = { single:"객관식 (하나 선택)", multi:"체크박스 (여러 개 선택)", text:"주관식 (텍스트)", rating:"별점 (1~5점)" };
+  const QTYPES = { single:"객관식 (하나 선택)", multi:"체크박스 (여러 개 선택)", text:"주관식 (텍스트)", rating:"별점 (1~5점)", notice:"설명 + 선택 (동의/비동의)" };
 
   auth.onAuthStateChanged(user => {
     me = user;
@@ -206,9 +206,11 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
 
   $("btnAddQ").onclick = () => addQCard({type:"single", title:"", options:["",""], required:true});
 
+  let cardSeq = 0;
   function addQCard(q){
     const card = document.createElement("div");
     card.className = "q-card";
+    const rname = "defsel" + (++cardSeq);
     card.innerHTML = `
       <div class="q-head">
         <input type="text" class="q-title-in" placeholder="질문을 입력하세요" value="${esc(q.title)}">
@@ -216,6 +218,7 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
           ${Object.entries(QTYPES).map(([k,v]) => `<option value="${k}" ${k===q.type?"selected":""}>${v}</option>`).join("")}
         </select>
       </div>
+      <input type="text" class="q-desc-in" placeholder="질문 설명 (선택) — 응답자에게 질문 밑에 작은 글씨로 보여요" value="${esc(q.desc || "")}">
       <div class="q-opts"></div>
       <div class="q-foot">
         <label><input type="checkbox" class="q-req" ${q.required!==false?"checked":""}> 필수 답변</label>
@@ -224,37 +227,115 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
     const optsBox = card.querySelector(".q-opts");
     const typeSel = card.querySelector(".q-type");
 
+    // 편집 상태 보관 (유형을 바꿨다 되돌려도 입력값 유지)
+    card._opts = (q.options && q.options.length)
+      ? q.options.map(o => ({ v: o, def: q.type === "multi" ? (q.defaults||[]).includes(o) : q.default === o }))
+      : [{v:"",def:false},{v:"",def:false}];
+    card._sub = q.subtype || "long";
+    card._maxLen = q.maxLen || 500;
+    card._content = q.content || "";
+
     function renderOpts(){
       const t = typeSel.value;
       optsBox.innerHTML = "";
       if (t === "text") {
-        optsBox.innerHTML = '<p class="muted">응답자가 자유롭게 글로 답해요.</p>';
+        optsBox.innerHTML = `
+          <div class="sub-row">
+            <select class="q-sub">
+              <option value="long">긴 문장</option>
+              <option value="short">짧은 문장 (40자 이내)</option>
+              <option value="name">이름 (10자 이내)</option>
+              <option value="phone">전화번호 (000-0000-0000)</option>
+              <option value="address">주소 (주소 + 상세주소)</option>
+            </select>
+            <span class="maxlen-box hidden">최대 <input type="number" class="q-maxlen" min="50" max="5000" step="50"> 자</span>
+          </div>
+          <p class="muted sub-hint"></p>`;
+        const sub = optsBox.querySelector(".q-sub");
+        const maxBox = optsBox.querySelector(".maxlen-box");
+        const maxIn = optsBox.querySelector(".q-maxlen");
+        const hint = optsBox.querySelector(".sub-hint");
+        sub.value = card._sub;
+        maxIn.value = card._maxLen;
+        const hints = {
+          long: "응답자가 자유롭게 길게 답해요. 최대 글자 수를 정할 수 있어요.",
+          short: "한 줄 입력칸, 최대 40자까지 입력돼요.",
+          name: "한 줄 입력칸, 최대 10자까지 입력돼요.",
+          phone: "숫자만 입력해도 000-0000-0000 형태로 자동 정리돼요.",
+          address: "도로명/지번 주소 칸 + 나머지 주소 칸, 2개로 나뉘어 보여요."
+        };
+        function upd(){
+          card._sub = sub.value;
+          maxBox.classList.toggle("hidden", sub.value !== "long");
+          hint.textContent = hints[sub.value];
+        }
+        sub.onchange = upd;
+        maxIn.oninput = () => { card._maxLen = Number(maxIn.value) || 500; };
+        upd();
       } else if (t === "rating") {
         optsBox.innerHTML = '<p class="muted">응답자가 별점 1~5점으로 답해요. ⭐⭐⭐⭐⭐</p>';
+      } else if (t === "notice") {
+        optsBox.innerHTML = `
+          <textarea class="q-content" rows="5" placeholder="유의사항 등 긴 설명을 적어 주세요. 응답자에게 박스 안에 표시돼요."></textarea>
+          <p class="muted" style="margin:8px 0 4px;">아래 선택지 2개 중 하나를 응답자가 고르게 돼요:</p>`;
+        const ta = optsBox.querySelector(".q-content");
+        ta.value = card._content;
+        ta.addEventListener("input", () => { card._content = ta.value; });
+        const labels = [card._opts[0]?.v || "동의", card._opts[1]?.v || "비동의"];
+        labels.forEach((v, i) => {
+          const row = document.createElement("div");
+          row.className = "opt-row";
+          row.innerHTML = `<span class="fake-radio"></span><input type="text" class="n-opt" placeholder="${i===0?"예) 동의":"예) 비동의"}" value="${esc(v)}">`;
+          row.querySelector(".n-opt").addEventListener("input", ev => {
+            card._opts[i] = { v: ev.target.value, def: false };
+          });
+          optsBox.appendChild(row);
+        });
+        card._opts = labels.map(v => ({ v, def: false }));
       } else {
-        (card._opts || ["",""]).forEach(v => addOptRow(v));
+        // 객관식 / 체크박스
+        card._opts.forEach(o => addOptRow(o));
         const add = document.createElement("button");
         add.className = "btn small ghost";
         add.textContent = "＋ 보기 추가";
-        add.onclick = () => { saveOpts(); addOptRow(""); optsBox.appendChild(add); };
+        add.onclick = () => { saveOpts(); addOptRow({v:"",def:false}); optsBox.appendChild(add); };
         optsBox.appendChild(add);
+        const hint = document.createElement("p");
+        hint.className = "opt-hint";
+        hint.textContent = t === "single"
+          ? "◉ 동그라미를 누르면 그 보기가 응답자에게 미리 선택된 상태로 보여요. (다시 누르면 해제)"
+          : "☑ 체크박스를 누르면 그 보기가 응답자에게 미리 선택된 상태로 보여요.";
+        optsBox.appendChild(hint);
       }
     }
-    function addOptRow(val){
+    function addOptRow(o){
+      const t = typeSel.value;
       const row = document.createElement("div");
       row.className = "opt-row";
-      row.innerHTML = `<span class="muted">◦</span><input type="text" placeholder="보기 내용" value="${esc(val)}">
+      const itype = t === "multi" ? "checkbox" : "radio";
+      row.innerHTML = `<input type="${itype}" class="opt-def" name="${rname}" title="기본 선택으로 지정" ${o.def?"checked":""}>
+        <input type="text" placeholder="보기 내용" value="${esc(o.v)}">
         <button class="btn small plain">✕</button>`;
+      const defIn = row.querySelector(".opt-def");
+      defIn.addEventListener("mousedown", () => { defIn._was = defIn.checked; });
+      defIn.addEventListener("click", () => {
+        if (itype === "radio" && defIn._was) defIn.checked = false;
+        saveOpts();
+      });
       row.querySelector("button").onclick = () => { row.remove(); saveOpts(); };
       const addBtn = optsBox.querySelector("button.ghost");
       optsBox.insertBefore(row, addBtn || null);
     }
     function saveOpts(){
-      card._opts = [...optsBox.querySelectorAll(".opt-row input")].map(i => i.value);
+      card._opts = [...optsBox.querySelectorAll(".opt-row")].map(r => ({
+        v: r.querySelector('input[type=text]').value,
+        def: r.querySelector('.opt-def') ? r.querySelector('.opt-def').checked : false
+      }));
     }
-    card._opts = (q.options && q.options.length) ? [...q.options] : ["",""];
     typeSel.onchange = renderOpts;
-    optsBox.addEventListener("input", saveOpts);
+    optsBox.addEventListener("input", ev => {
+      if (ev.target.matches('.opt-row input[type=text]:not(.n-opt)')) saveOpts();
+    });
     card.querySelector(".q-del").onclick = () => {
       if ($("qList").children.length <= 1) { toast("질문은 최소 1개 필요해요"); return; }
       card.remove();
@@ -269,15 +350,35 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
     const questions = [];
     for (const card of $("qList").children) {
       const qt = card.querySelector(".q-title-in").value.trim();
+      const qdesc = card.querySelector(".q-desc-in").value.trim();
       const type = card.querySelector(".q-type").value;
       const required = card.querySelector(".q-req").checked;
       if (!qt) { toast("빈 질문이 있어요. 질문 내용을 입력해 주세요"); return; }
-      let options = [];
+      const q = { type, title: qt, desc: qdesc, options: [], required };
       if (type === "single" || type === "multi") {
-        options = [...card.querySelectorAll(".opt-row input")].map(i => i.value.trim()).filter(Boolean);
-        if (options.length < 2) { toast(`"${qt}" 질문에 보기를 2개 이상 넣어 주세요`); return; }
+        const rows = [...card.querySelectorAll(".opt-row")].map(r => ({
+          v: r.querySelector('input[type=text]').value.trim(),
+          def: r.querySelector('.opt-def') ? r.querySelector('.opt-def').checked : false
+        })).filter(r => r.v);
+        if (rows.length < 2) { toast(`"${qt}" 질문에 보기를 2개 이상 넣어 주세요`); return; }
+        q.options = rows.map(r => r.v);
+        if (type === "single") {
+          const d = rows.find(r => r.def);
+          q.default = d ? d.v : null;
+        } else {
+          q.defaults = rows.filter(r => r.def).map(r => r.v);
+        }
+      } else if (type === "text") {
+        q.subtype = card._sub || "long";
+        if (q.subtype === "long") q.maxLen = card._maxLen || 500;
+      } else if (type === "notice") {
+        const content = (card._content || "").trim();
+        if (!content) { toast(`"${qt}" 질문에 설명 내용을 입력해 주세요`); return; }
+        q.content = content;
+        const labels = [...card.querySelectorAll(".n-opt")].map(i => i.value.trim());
+        q.options = [labels[0] || "동의", labels[1] || "비동의"];
       }
-      questions.push({ type, title: qt, options, required });
+      questions.push(q);
     }
     $("btnSave").disabled = true;
     try {
@@ -329,9 +430,10 @@ if (!cfg.apiKey || cfg.apiKey.includes("붙여넣")) {
         const box = document.createElement("div");
         box.className = "res-q";
         let html = `<div class="q-title">${qi+1}. ${esc(q.title)}</div>`;
+        if (q.desc) html += `<div class="q-desc">${esc(q.desc)}</div>`;
         const answers = responses.map(r => r.answers[qi]);
 
-        if (q.type === "single" || q.type === "multi") {
+        if (q.type === "single" || q.type === "multi" || q.type === "notice") {
           const counts = {};
           q.options.forEach(o => counts[o] = 0);
           answers.forEach(a => {
